@@ -30,9 +30,10 @@ instance Arbitrary LabeledInt where
     pure $ LabeledInt i l
 
 instance Arbitrary Instr where
-  arbitrary = do
-    li <- arbitrary
-    elements [Push li, Pop, Load, Store, Add, Noop]
+  arbitrary = sized genWellFormedInstr
+  -- do
+  --   li <- arbitrary
+  --   elements [Push li, Pop, Load, Store, Add, Noop]
 
 ------- Equivalence relations -------
 
@@ -77,14 +78,67 @@ machine_state_equiv (_, _, m1, i1) (_, _, m2, i2) =
 -- generate (arbitrary :: Gen [Instr])
 -- generate $ vectorOf 5 (arbitrary :: Gen Instr)
 
+{- Well formed instruction constraints
+
+          Stack size          Memory size
+Noop          ~                    ~
+Push          ~                    ~
+Pop          >= 1                  ~
+Load         >= 1         mem_size >= stack_head
+Store        >= 2         mem_size >= stack_head
+Add          >= 2                  ~
+Halt          ~                    ~
+
+
+mem_size constraint handling:
+Labeled Int's generator chooses between 0 and 5 and the
+mem_size is at static 10; so second constraint handled.
+
+-}
+
+genWellFormedInstr :: Int -> Gen Instr
+genWellFormedInstr stackSize
+  | stackSize == 0 = frequency [ (5, Push <$> arbitrary)
+                               , (1, return Noop)
+                               , (1, return Halt)]
+  | stackSize == 1 = frequency [ (4, Push <$> arbitrary)
+                               , (4, return Pop)
+                               , (3, return Load)
+                               , (3, return Noop)
+                               , (1, return Halt)
+                               ]
+  | otherwise      = frequency [ (5, Push <$> arbitrary)
+                               , (5, return Pop)
+                               , (4, return Load)
+                               , (4, return Store)
+                               , (5, return Add)
+                               , (3, return Noop)
+                               , (1, return Halt)
+                               ]
+
+-- Generator for a sequence of well-formed instructions
+genWellFormedProgram :: Int -> Gen [Instr]
+genWellFormedProgram stackSize = do
+  instr <- genWellFormedInstr stackSize
+  case instr of
+    Push _ -> (instr :) <$> genWellFormedProgram (stackSize + 1)
+    Pop    -> (instr :) <$> genWellFormedProgram (stackSize - 1)
+    Add    -> (instr :) <$> genWellFormedProgram (stackSize - 2)
+    Store  -> (instr :) <$> genWellFormedProgram (stackSize - 2)
+    Halt   -> return [instr]
+    _      -> (instr :) <$> genWellFormedProgram stackSize
+
+initStackSize :: Int
+initStackSize = 0
+
 equiv_ms_gen :: Gen (MachineState, MachineState)
 equiv_ms_gen = do
   -- Machine State 1 --
-  i1 <- vectorOf 5 arbitrary -- naive generator of instructions
-  let ms1 = (0, [], replicate 10 initVal, i1 ++ [Halt])
+  i1 <- genWellFormedProgram initStackSize
+  let ms1 = (0, [], replicate 10 initVal, i1)
   -- Machine State 2 --
   i2 <- equiv_instr_gen i1 []
-  let ms2 = (0, [], replicate 10 initVal, i2 ++ [Halt])
+  let ms2 = (0, [], replicate 10 initVal, i2)
   return (ms1, ms2)
   where
     initVal = LabeledInt 0 L
@@ -95,16 +149,27 @@ equiv_instr_gen (i1 : is) i_equiv = do
   i_g <- arbitrary `suchThat` (\i_gen -> i1 `instr_equiv` i_gen)
   equiv_instr_gen is (i_g:i_equiv)
 
-
 eeni :: Property
 eeni =
   forAll equiv_ms_gen
-  (\(ms1, ms2) -> (step ms1) `machine_state_equiv` (step ms2))
+  (\(ms1, ms2) ->
+     (ms1 `machine_state_equiv` ms2) ==> -- generator ensures this
+     (step ms1) `machine_state_equiv` (step ms2))
 
-eeni_naive :: MachineState -> MachineState -> Property
-eeni_naive ms1 ms2 =
-  (ms1 `machine_state_equiv` ms2)
-                   ==> (step ms1) `machine_state_equiv` (step ms2)
+
+
+
+-- A detected counterexample
+i1 :: InstrMem
+i1 = [Push (LabeledInt 3 L),Push (LabeledInt 1 H),Noop,Store,Push (LabeledInt 2 H),Load,Noop,Pop,Halt]
+
+i2 :: InstrMem
+i2 = [Push (LabeledInt 3 L),Push (LabeledInt 0 H),Noop,Store,Push (LabeledInt 1 H),Load,Noop,Pop,Halt]
+
+
+ms1, ms2 :: MachineState
+ms1 = (0, [], replicate 5 (LabeledInt 0 L), i1)
+ms2 = (0, [], replicate 5 (LabeledInt 0 L), i2)
 
 
 (~>) :: InstrMem -> PC -> Instr
@@ -114,7 +179,7 @@ eeni_naive ms1 ms2 =
 step :: MachineState -> MachineState
 step ms@(pc, s, m, i)
   | step' (i ~> pc) == ms = (pc, s, m, i) --error "Machine halted"
-  | otherwise = step' (i ~> pc)
+  | otherwise = step (step' (i ~> pc))
   where
     pc' = pc + 1
     step' :: Instr ->  MachineState
@@ -133,7 +198,6 @@ step ms@(pc, s, m, i)
 
 updList :: Int -> a -> [a] -> [a]
 updList i x xs = take i xs ++ [x] ++ drop (i + 1) xs
-
 
 main :: IO ()
 main = putStrLn "Hello, Haskell!"
@@ -156,7 +220,7 @@ forAll :: (Show a, Testable prop)
 (==>)  :: Testable prop => Bool -> prop -> Property
 
 generate :: Gen a -> IO a
-
+sample   :: Show a => Gen a -> IO ()
 @-}
 
 

@@ -5,6 +5,21 @@ import Test.QuickCheck
 
 data Label = H | L deriving (Show, Eq)
 
+-- least upper bound
+(\/) :: Label -> Label -> Label
+(\/) H H = H
+(\/) H L = H
+(\/) L H = H
+(\/) L L = L
+
+canFlowTo :: Label -> Label -> Bool
+canFlowTo H H = True
+canFlowTo L L = True
+canFlowTo L H = True
+canFlowTo H L = False
+
+
+
 data LabeledInt = LabeledInt Int Label deriving (Show, Eq)
 
 data Instr = Push LabeledInt
@@ -69,8 +84,25 @@ mem_equiv m1 m2 = and $ zipWith labeled_int_equiv m1 m2
 
 
 machine_state_equiv :: MachineState -> MachineState -> Bool
-machine_state_equiv (_, _, m1, i1) (_, _, m2, i2) =
-  mem_equiv m1 m2 && instr_mem_equiv i1 i2
+machine_state_equiv (pc1, _, m1, i1) (pc2, _, m2, i2)
+  | pc1 == crash && pc2 == crash = True -- See NOTE 2
+  | pc1 == crash && pc2 /= crash = False
+  | pc1 /= crash && pc2 == crash = False
+  | otherwise = mem_equiv m1 m2 && instr_mem_equiv i1 i2
+
+-- NOTE 2
+-- Because the program crashed, the observer can now only
+-- observe the crash. There is no guarantee about the rest
+-- of the machine state; it is considered corrupted.
+-- We first check if both programs have crashed. If both
+-- show crash behaviour we current consider them equivalent.
+-- If one crashed and the other didn't then the programs
+-- are not equivalent;
+-- If both didn't crash, inspect the behaviour.
+
+(~~) :: MachineState -> MachineState -> Bool
+(~~) = machine_state_equiv
+
 
 -------- Non interference theorem --------
 
@@ -98,16 +130,16 @@ mem_size is at static 10; so second constraint handled.
 
 genWellFormedInstr :: Int -> Gen Instr
 genWellFormedInstr stackSize
-  | stackSize == 0 = frequency [ (5, Push <$> arbitrary)
+  | stackSize == 0 = frequency [ (5, Push <$> l_int_gen)
                                , (1, return Noop)
                                , (1, return Halt)]
-  | stackSize == 1 = frequency [ (4, Push <$> arbitrary)
+  | stackSize == 1 = frequency [ (4, Push <$> l_int_gen)
                                , (4, return Pop)
                                , (3, return Load)
                                , (3, return Noop)
                                , (1, return Halt)
                                ]
-  | otherwise      = frequency [ (5, Push <$> arbitrary)
+  | otherwise      = frequency [ (5, Push <$> l_int_gen)
                                , (5, return Pop)
                                , (4, return Load)
                                , (4, return Store)
@@ -115,6 +147,9 @@ genWellFormedInstr stackSize
                                , (3, return Noop)
                                , (1, return Halt)
                                ]
+  where
+    l_int_gen :: Gen LabeledInt
+    l_int_gen = arbitrary -- see NOTE 1 for strategy
 
 -- Generator for a sequence of well-formed instructions
 genWellFormedProgram :: Int -> Gen [Instr]
@@ -153,13 +188,13 @@ eeni :: Property
 eeni =
   forAll equiv_ms_gen
   (\(ms1, ms2) ->
-     (ms1 `machine_state_equiv` ms2) ==> -- generator ensures this
-     (step ms1) `machine_state_equiv` (step ms2))
+     (ms1 ~~ ms2) ==> -- generator ensures this; non needed
+     (step ms1) ~~ (step ms2))
 
 
 
 
--- A detected counterexample
+-- Bug #1 counterexample
 i1 :: InstrMem
 i1 = [Push (LabeledInt 3 L),Push (LabeledInt 1 H),Noop,Store,Push (LabeledInt 2 H),Load,Noop,Pop,Halt]
 
@@ -167,18 +202,39 @@ i2 :: InstrMem
 i2 = [Push (LabeledInt 3 L),Push (LabeledInt 0 H),Noop,Store,Push (LabeledInt 1 H),Load,Noop,Pop,Halt]
 
 
+-- Bug #2 counterexample
+i3 = [Push (LabeledInt 1 H),Pop,Push (LabeledInt 5 H),Push (LabeledInt 4 H),Noop,Pop,Push (LabeledInt 5 H),Store,Push (LabeledInt 4 H),Noop,Noop,Pop,Push (LabeledInt 3 H),Noop,Push (LabeledInt 1 L),Pop,Load,Halt]
+
+i4 = [Push (LabeledInt 5 H),Pop,Push (LabeledInt 3 H),Push (LabeledInt 2 H),Noop,Pop,Push (LabeledInt 3 H),Store,Push (LabeledInt 1 H),Noop,Noop,Pop,Push (LabeledInt 1 H),Noop,Push (LabeledInt 1 L),Pop,Load,Halt]
+
+-- Bug #3 counterexample
+i5 = [Noop,Push (LabeledInt 3 H),Noop,Push (LabeledInt 2 H),Load,Push (LabeledInt 3 L),Load,Pop,Noop,Add,Noop,Push (LabeledInt 2 L),Load,Push (LabeledInt 4 L),Push (LabeledInt 1 H),Add,Push (LabeledInt 4 L),Store,Push (LabeledInt 4 L),Pop,Push (LabeledInt 3 L),Push (LabeledInt 3 L),Load,Load,Add,Push (LabeledInt 2 H),Push (LabeledInt 0 L),Load,Halt]
+
+i6 = [Noop,Push (LabeledInt 0 H),Noop,Push (LabeledInt 5 H),Load,Push (LabeledInt 3 L),Load,Pop,Noop,Add,Noop,Push (LabeledInt 2 L),Load,Push (LabeledInt 4 L),Push (LabeledInt 4 H),Add,Push (LabeledInt 4 L),Store,Push (LabeledInt 4 L),Pop,Push (LabeledInt 3 L),Push (LabeledInt 3 L),Load,Load,Add,Push (LabeledInt 1 H),Push (LabeledInt 0 L),Load,Halt]
+
+
+
+i7 = [Push (LabeledInt 2 H),Push (LabeledInt 0 L),Load,Pop,Push (LabeledInt 1 L),Store,Push (LabeledInt 4 L),Load,Load,Push (LabeledInt 5 H),Push (LabeledInt 1 H),Store,Halt]
+
+i8 = [Push (LabeledInt 4 H),Push (LabeledInt 0 L),Load,Pop,Push (LabeledInt 1 L),Store,Push (LabeledInt 4 L),Load,Load,Push (LabeledInt 0 H),Push (LabeledInt 0 H),Store,Halt]
+
+
 ms1, ms2 :: MachineState
-ms1 = (0, [], replicate 5 (LabeledInt 0 L), i1)
-ms2 = (0, [], replicate 5 (LabeledInt 0 L), i2)
+ms1 = (0, [], replicate 6 (LabeledInt 0 L), i7)
+ms2 = (0, [], replicate 6 (LabeledInt 0 L), i8)
 
 
 (~>) :: InstrMem -> PC -> Instr
 (~>) i pc = i !! pc
 
+-- @ upon program crash set PC = -1
+crash :: PC
+crash = -1
 
 step :: MachineState -> MachineState
 step ms@(pc, s, m, i)
-  | step' (i ~> pc) == ms = (pc, s, m, i) --error "Machine halted"
+  | pc == -1 = (pc, s, m, i) -- program crashed
+  | step' (i ~> pc) == ms = (pc, s, m, i)
   | otherwise = step (step' (i ~> pc))
   where
     pc' = pc + 1
@@ -186,14 +242,30 @@ step ms@(pc, s, m, i)
     step' Noop     = (pc', s, m, i)
     step' (Push n) = (pc', n:s, m, i)
     step' Pop      = (pc', tail s, m, i)
-    step' Load     = (pc', n:(tail s), m, i)
-      where (LabeledInt p _) = head s -- threw the label
-            n = m !! p
-    step' Store    = (pc', s', m', i)
-      where ((LabeledInt p _):n:s') = s -- threw the label
-            m' = updList p n m
-    step' Add  = (pc', (LabeledInt (n1 + n2) L):s', m, i)
-      where ((LabeledInt n1 _):(LabeledInt n2 _):s') = s -- threw two labels
+    -- step' Load     = (pc', n:(tail s), m, i)
+    --   where (LabeledInt p _) = head s
+    --         n = m !! p
+    step' Load     = (pc', (LabeledInt n (l_n \/ l_p)):(tail s), m, i)
+      where (LabeledInt p l_p) = head s
+            (LabeledInt n l_n) = m !! p
+
+    -- step' Store    = (pc', s', m', i) -- Bug #1
+    --   where ((LabeledInt p _):n:s') = s
+    --         m' = updList p n m
+    -- step' Store    = (pc', s', m', i) -- Bug #2
+    --   where ((LabeledInt p l_p):(LabeledInt n l_n):s') = s
+    --         m' = updList p (LabeledInt n (l_p \/ l_n)) m
+    step' Store
+      | l_p `canFlowTo` l_n' = (pc', s', m', i)
+      | otherwise = (crash, s, m, i)
+      where ((LabeledInt p l_p):(LabeledInt n l_n):s') = s
+            (LabeledInt _ l_n') = m !! p
+            m' = updList p (LabeledInt n (l_n \/ l_p)) m
+    -- step' Add  = (pc', (LabeledInt (n1 + n2) L):s', m, i) -- Bug #3
+    --   where ((LabeledInt n1 _):(LabeledInt n2 _):s') = s
+    step' Add  = (pc', (LabeledInt (n1 + n2) (l_1 \/ l_2)):s', m, i)
+      where ((LabeledInt n1 l_1):(LabeledInt n2 l_2):s') = s -- threw two labels
+
     step' Halt = (pc, s, m, i) -- return the same state back
 
 updList :: Int -> a -> [a] -> [a]
@@ -207,6 +279,7 @@ main = putStrLn "Hello, Haskell!"
 arbitrary :: Arbitrary a => Gen a
 
 -- generators
+listOf    :: Gen a -> Gen [a]
 vectorOf  :: Int   -> Gen a       -> Gen [a]
 suchThat  :: Gen a -> (a -> Bool) -> Gen a
 oneof     :: [Gen a] -> Gen a
@@ -225,3 +298,32 @@ sample   :: Show a => Gen a -> IO ()
 
 
 
+--NOTE 1
+{-
+Strategy: current generator for labeled int
+  arbitrary = do
+    i <- choose (0, 5)
+    l <- arbitrary
+    pure $ LabeledInt i l
+
+instead use the a few bits of the integer to
+differentiate between pointers and numbers;
+Then you can have
+
+i <- oneof [ choose (0,5) -- normal ints
+           , generate pointers
+           ]
+
+Given that you do this now inside l_int_gen
+
+l_int_gen memory = do
+   (LabeledInt n l_n) <- arbitrary
+   if (n is pointer)
+   then ensure l_n `canFlowTo` (labelOf $ memory !! n)
+        if flow not allowed keep generating till
+        flow is allowed
+        return ((LabeledInt n l_n))
+   else arbitrary
+
+
+-}

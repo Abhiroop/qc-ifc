@@ -1,3 +1,4 @@
+{-# LANGUAGE InstanceSigs #-}
 {-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
 {-# LANGUAGE DerivingStrategies #-}
 module QSM2 where
@@ -12,8 +13,6 @@ import Test.QuickCheck.Monadic
 -- https://www.linkedin.com/posts/hillel-wayne_one-of-the-ways-formal-methods-can-find-bugs-activity-7206681074142236673-YotX/?utm_source=share&utm_medium=member_desktop
 
 newtype Balance = Balance (IORef Int)
-
-
 
 newAccount :: Int -> IO Balance
 newAccount init_bal = do
@@ -51,52 +50,50 @@ newtype Program = Program [Command]
 instance Arbitrary Program where
   arbitrary = Program <$> listOf arbitrary
 
+  shrink :: Program -> [Program]
+  shrink (Program cmds) =
+    [Program (merge cmds') | cmds' <- shrinkList shrinkCommand cmds]
+    where
+      merge :: [Command] -> [Command]
+      merge [] = []
+      merge (ADDBAL i : ADDBAL j : cmds')     = ADDBAL (i + j)   : merge cmds'
+      merge (WITHDRAW i : WITHDRAW j : cmds') = WITHDRAW (i + j) : merge cmds'
+      merge (ADDBAL i : WITHDRAW j : cmds')
+        | i >= j    = ADDBAL (i - j)   : merge cmds'
+        | otherwise = WITHDRAW (j - i) : merge cmds'
+      merge (WITHDRAW i : ADDBAL j : cmds')
+        | i >= j    = WITHDRAW (i - j) : merge cmds'
+        | otherwise = ADDBAL (j - i)   : merge cmds'
+      merge (cmd: cmds') = cmd : merge cmds'
 
-step :: Command -> Balance -> IO ()
-step (ADDBAL i) bal = addBalance bal i
-step (WITHDRAW i) bal = withdraw bal i
+      shrinkCommand :: Command -> [Command]
+      shrinkCommand (ADDBAL i)   = [ ADDBAL i'   | i' <- shrink i]
+      shrinkCommand (WITHDRAW i) = [ WITHDRAW i' | i' <- shrink i]
 
 
--- prop_positive_bal_per_cmd :: [Command] -> Property
--- prop_positive_bal_per_cmd [] = monadicIO $ assert True
--- prop_positive_bal_per_cmd (c:cs) = undefined
+step :: Balance -> Command -> IO ()
+step bal (ADDBAL i)   = addBalance bal i
+step bal (WITHDRAW i) = withdraw bal i
+
 
 prop_positive_bal :: Property
 prop_positive_bal = monadicIO $ do
-  init_bal <- liftIO $ generate (arbitrary `suchThat` (> 100))
-  bal  <- liftIO $ newAccount init_bal
-  prog <- liftIO $ generate (arbitrary :: Gen Program)
-  let (Program cmds) = prog
-  run $ mapM_ (\c -> step c bal) cmds
+  (initBal, cmds) <- liftIO $ gen_balance_and_prog
+  bal  <- liftIO $ newAccount initBal
+  run  $  mapM_ (step bal) cmds
   bal' <- liftIO $ getBalance bal
-  monitor (counterexample ("Initial Balance " ++ show init_bal ++
+  monitor (counterexample ("Initial Balance " ++ show initBal ++
                            " " ++ show cmds ++
                            "Final Balance: " ++ show bal'))
   assert (bal' > 0)
 
-prop_positive_bal' :: Property
-prop_positive_bal' = monadicIO $ do
-  init_bal <- liftIO $ generate (arbitrary `suchThat` (> 100))
-  bal  <- liftIO $ newAccount init_bal
-  prog <- liftIO $ generate (arbitrary :: Gen Program)
+
+gen_balance_and_prog :: IO (Int, [Command])
+gen_balance_and_prog = generate $ do
+  init_bal <- arbitrary `suchThat` (> 100)
+  prog     <- arbitrary
   let (Program cmds) = prog
-  res <- run (go cmds bal)
-  bal' <- liftIO $ getBalance bal
-  monitor (counterexample ("Initial Balance " ++ show init_bal ++
-                           " " ++ show cmds ++
-                           "Final Balance: " ++ show bal'))
-  assert res
-  where
-    go :: [Command] -> Balance -> IO Bool
-    go [] _ = pure True
-    go (c:cs) bal = do
-      step c bal
-      b <- getBalance bal
-      if (b < 0)
-      then pure False
-      else go cs bal
-
-
+  return (init_bal, cmds)
 
 
 

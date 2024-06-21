@@ -30,10 +30,12 @@ executable qc-ifc
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
     build-depends:    base ^>=4.16.4.0,
+                      async,
                       containers,
                       directory,
                       filepath,
                       QuickCheck,
-                      quickcheck-state-machine
+                      quickcheck-state-machine,
+                      stm
     hs-source-dirs:   app
     default-language: Haskell2010

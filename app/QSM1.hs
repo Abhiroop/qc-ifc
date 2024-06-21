@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -fwarn-incomplete-patterns #-}
 {-# LANGUAGE DerivingStrategies #-}
 module QSM1 where
 
@@ -23,11 +24,14 @@ incr (Counter ref) i = do
 get :: Counter -> IO Int
 get (Counter ref) = readIORef ref
 
+reset :: Counter -> IO ()
+reset (Counter ref) = modifyIORef ref (const 0)
 
 newtype FakeCounter = FakeCounter Int
   deriving stock Show
 
 data Command = Incr Int | Get
+             -- | Reset
   deriving stock (Eq, Show)
 
 data Response = Unit () | Int Int
@@ -41,12 +45,16 @@ mockIncr (FakeCounter i) j = (FakeCounter (i+j), Unit ())
 mockGet :: Model -> (Model, Response)
 mockGet m@(FakeCounter i) = (m, Int i)
 
+mockReset :: Model -> (Model, Response)
+mockReset (FakeCounter i) = (FakeCounter 0, Unit ())
+
 initModel :: Model
 initModel = FakeCounter 0
 
 step :: Model -> Command -> (Model, Response)
-step model (Incr n) = mockIncr model n
-step model Get      = mockGet model
+step model (Incr n) = mockIncr  model n
+step model Get      = mockGet   model
+-- step model Reset    = mockReset model
 
 newtype Program = Program [Command]
   deriving stock Show
@@ -59,7 +67,9 @@ genCommand :: Gen Command
 genCommand = oneof [Incr <$> genInt, return Get]
   where
     genInt :: Gen Int
-    genInt = arbitrary `suchThat` (> 0)
+    genInt = frequency [ (400, arbitrary `suchThat` (> 0))
+                       , (1, return  maxBound)
+                       ]
 
 shrinkProgram :: Program -> [Program]
 shrinkProgram (Program cmds) =
@@ -68,11 +78,13 @@ shrinkProgram (Program cmds) =
     merge :: [Command] -> [Command]
     merge [] = []
     merge (Incr i : Incr j : cmds') = Incr (i + j) : merge cmds'
+    -- merge (Incr i: Reset : cmds')   = Reset : merge cmds'
     merge (cmd: cmds') = cmd : merge cmds'
 
 shrinkCommand :: Command -> [Command]
 shrinkCommand (Incr i) = [ Incr i' | i' <- shrink i ]
 shrinkCommand Get      = []
+-- shrinkCommand Reset    = []
 
 samplePrograms :: IO ()
 samplePrograms = sample genProgram
@@ -100,8 +112,9 @@ runPrograms c0 m0 (Program cmds0) = go c0 m0 [] cmds0
 
 exec :: Counter -> Command -> IO Response
 exec c cmd = case cmd of
-  Incr i -> Unit <$> incr c i
-  Get    -> Int  <$> get c
+  Incr i -> Unit <$> incr  c i
+  Get    -> Int  <$> get   c
+  -- Reset  -> Unit <$> reset c
 
 prop_counter :: Property
 prop_counter = forAllShrink genProgram shrinkProgram $ \prog -> monadicIO $ do
@@ -132,6 +145,7 @@ foo = do
   incr c 5
   incr c 996
   incr c 5
+  reset c
   i <- get c
   putStrLn $ "Counter : " <> show i
 

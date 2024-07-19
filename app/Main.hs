@@ -327,3 +327,48 @@ l_int_gen memory = do
 
 
 -}
+
+-- GOOD QC DEMO
+
+newtype IWrapper = IWrapper { ints :: [Int] } deriving (Show, Eq)
+
+newtype PWrapper = PWrapper { p :: (Int, IWrapper) } deriving (Show, Eq)
+
+instance Arbitrary IWrapper where
+  arbitrary = IWrapper <$>
+    genPosListInt `suchThat` (\xs -> let (a:b:_) = xs in a == b)
+    where
+      genPosInt = arbitrary `suchThat` (> 0)
+
+      genPosListInt = listOf genPosInt `suchThat` ((> 1) . length)
+
+instance Arbitrary PWrapper where
+  arbitrary = do
+    x        <- arbitrary `suchThat` (> 0)
+    iwrapper <- arbitrary `suchThat` ((foo x ==) . head . ints)
+    PWrapper <$> pure (x, iwrapper)
+
+data Foo = Pass | Error deriving (Eq, Show)
+
+foo :: Int -> Int
+foo v = 2 * v + 1
+
+
+test_me :: Int -> IWrapper -> Foo
+test_me x iwrapper = test_me1 x (ints iwrapper)
+
+
+test_me1 _ []  = Pass
+test_me1 _ [x] = Pass
+test_me1 x p@(a:b:as)
+  | x > 0 && (foo x == a) && b == a = Error
+  | otherwise = Pass
+
+prop_test_me :: Int -> IWrapper -> Bool
+prop_test_me x xs = (test_me x xs == Pass)
+
+
+test_me_W :: PWrapper -> Bool
+test_me_W pw = let (x, iw) = p pw
+                in prop_test_me x iw
+
